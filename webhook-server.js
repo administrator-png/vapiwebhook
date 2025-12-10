@@ -401,7 +401,7 @@ app.get('/health', (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log('\n🚀 Vapi Webhook Server Started');
   console.log('================================');
   console.log(`📍 Port: ${PORT}`);
