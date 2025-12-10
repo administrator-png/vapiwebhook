@@ -142,10 +142,6 @@ async function handleBookAppointment(params) {
       }
     };
 
-    if (params.customerPhone) {
-      bookingPayload.smsReminderNumber = params.customerPhone;
-    }
-
     console.log('📤 Sending booking request...');
     console.log('📦 Booking payload:', JSON.stringify(bookingPayload, null, 2));
 
