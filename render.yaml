@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: vapi-webhook
+    env: node
+    buildCommand: npm install
+    startCommand: node webhook-server.js
+    envVars:
+      - key: CAL_API_KEY
+        sync: false
+      - key: CAL_EVENT_TYPE_ID
+        value: 3917527
