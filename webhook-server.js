@@ -78,9 +78,8 @@ async function handleGetAvailableSlots(params) {
   console.log('📅 Getting available slots for:', params.date);
 
   try {
-    const timeZone = 'Europe/London';
-    // V1 API uses username and eventTypeSlug, not eventTypeId for slots
-    const url = `${CAL_API_BASE_URL}/slots/available?apiKey=${CAL_API_KEY}&username=${CAL_USERNAME}&eventTypeSlug=${CAL_EVENT_TYPE_SLUG}&startTime=${params.date}T00:00:00Z&endTime=${params.date}T23:59:59Z&timeZone=${encodeURIComponent(timeZone)}`;
+    // V1 API uses eventTypeId for /slots endpoint
+    const url = `${CAL_API_BASE_URL}/slots?apiKey=${CAL_API_KEY}&eventTypeId=${CAL_EVENT_TYPE_ID}&startTime=${params.date}T00:00:00Z&endTime=${params.date}T23:59:59Z`;
 
     console.log('📤 Request URL:', url);
 
@@ -99,8 +98,9 @@ async function handleGetAvailableSlots(params) {
     const data = await response.json();
     console.log('📥 Response data:', JSON.stringify(data, null, 2));
 
-    // V1 API returns: { data: { slots: [{time: "ISO"}, ...] } }
-    const slots = data.data?.slots || [];
+    // V1 API returns: { slots: { "2025-12-18": [{time: "ISO"}, ...] } }
+    const dateSlots = data.slots?.[params.date] || [];
+    const slots = dateSlots;
     const formattedSlots = formatSlots(slots);
 
     console.log(`✅ Found ${formattedSlots.length} available slots`);
@@ -303,7 +303,7 @@ async function handleRescheduleAppointment(params) {
 // Main webhook endpoint
 app.post('/webhook', async (req, res) => {
   console.log('\n🔔 Webhook received:', new Date().toISOString());
-  console.log('�� Full request body:', JSON.stringify(req.body, null, 2));
+  console.log('📦 Full request body:', JSON.stringify(req.body, null, 2));
 
   const { message } = req.body;
 
