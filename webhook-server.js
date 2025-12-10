@@ -143,24 +143,15 @@ async function handleBookAppointment(params) {
     const bookingPayload = {
       eventTypeId: CAL_EVENT_TYPE_ID,
       start: startTime,
-      name: params.customerName,
-      email: placeholderEmail, // Placeholder - will be updated via WhatsApp link
       timeZone: 'Europe/London',
       language: 'en',
-      metadata: {
-        source: 'AI Receptionist',
-        notes: params.notes || '',
-        emailPending: true, // Flag that email needs to be collected
-        customerPhone: params.customerPhone
-      },
+      metadata: {},
       responses: {
         name: params.customerName,
         email: placeholderEmail,
         location: { optionValue: '', value: 'integrations:zoom' },
-        notes: params.notes || 'Booked via AI Receptionist - Email pending via WhatsApp',
-        phone: params.customerPhone || '' // Add phone to responses for webhook handler
-      },
-      smsReminderNumber: params.customerPhone || undefined // For Cal.com SMS reminders
+        notes: params.notes || 'Booked via AI Receptionist - Email pending via WhatsApp'
+      }
     };
 
     console.log('📤 Sending booking request...');
@@ -183,8 +174,8 @@ async function handleBookAppointment(params) {
     }
 
     const booking = await response.json();
-    const bookingId = booking.data?.id;
-    const bookingUid = booking.data?.uid;
+    const bookingId = booking.id;
+    const bookingUid = booking.uid;
 
     console.log('✅ Booking created successfully');
     console.log('📋 Booking ID:', bookingId);
