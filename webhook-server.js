@@ -20,6 +20,11 @@ const CAL_USERNAME = 'sonic-iq-6ttuqv';
 const CAL_EVENT_TYPE_ID = 3917527; // 30 Min Meeting
 const CAL_EVENT_TYPE_SLUG = '30min';
 
+// Twilio WhatsApp configuration
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
+
 // Debug: Log environment variable status on startup
 console.log('🔍 Environment Check:');
 console.log('  process.env.CAL_API_KEY:', process.env.CAL_API_KEY ? 'SET' : 'MISSING');
@@ -71,6 +76,48 @@ function formatSlots(slots) {
       timeZone: 'Europe/London'
     });
   });
+}
+
+// Helper function to send WhatsApp message via Twilio
+async function sendWhatsAppMessage(to, message) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+    console.log('⚠️  Twilio not configured, skipping WhatsApp message');
+    return { success: false, error: 'Twilio not configured' };
+  }
+
+  try {
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+
+    const formData = new URLSearchParams({
+      To: `whatsapp:${to}`,
+      From: `whatsapp:${TWILIO_PHONE_NUMBER}`,
+      Body: message,
+    });
+
+    const credentials = btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${credentials}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: formData.toString(),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ Twilio WhatsApp error:', errorText);
+      return { success: false, error: errorText };
+    }
+
+    const data = await response.json();
+    console.log('✅ WhatsApp message sent:', data.sid);
+    return { success: true, messageId: data.sid };
+  } catch (error) {
+    console.error('❌ Error sending WhatsApp:', error.message);
+    return { success: false, error: error.message };
+  }
 }
 
 // Function handlers
@@ -187,14 +234,20 @@ async function handleBookAppointment(params) {
 
     console.log('📱 Sending WhatsApp message with email confirmation link...');
 
-    // Note: WhatsApp sending would be handled separately
-    // For now, we'll return the link in the response
+    // Send WhatsApp message via Twilio
+    const whatsappResult = await sendWhatsAppMessage(params.customerPhone, whatsappMessage);
+    if (whatsappResult.success) {
+      console.log('✅ WhatsApp sent successfully');
+    } else {
+      console.log('⚠️  WhatsApp send failed:', whatsappResult.error);
+    }
 
     return {
       success: true,
       bookingId: bookingId,
       bookingUid: bookingUid,
       emailConfirmLink: emailConfirmLink,
+      whatsappSent: whatsappResult.success,
       message: `Perfect! I have booked your appointment for ${params.time} on ${params.date}. You will receive a WhatsApp message with a link to confirm your email address and get your Zoom meeting link. Is there anything else I can help you with?`
     };
 
