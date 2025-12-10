@@ -1,0 +1,15 @@
+{
+  "name": "vapi-webhook-server",
+  "version": "1.0.0",
+  "description": "Webhook server for Vapi Cal.com integration",
+  "main": "webhook-server.js",
+  "scripts": {
+    "start": "node webhook-server.js",
+    "dev": "node webhook-server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1"
+  }
+}
