@@ -3,7 +3,6 @@
  * Receives function calls from Vapi and routes them to Cal.com API
  */
 
-require('dotenv').config({ path: '../.env' });
 const express = require('express');
 const cors = require('cors');
 
@@ -15,11 +14,18 @@ app.use(cors());
 app.use(express.json());
 
 // Cal.com API configuration
-const CAL_API_KEY = process.env.EXPO_PUBLIC_CAL_API_KEY;
+const CAL_API_KEY = process.env.CAL_API_KEY || process.env.EXPO_PUBLIC_CAL_API_KEY;
 const CAL_API_BASE_URL = 'https://api.cal.com/v1';
 const CAL_USERNAME = 'sonic-iq-6ttuqv';
 const CAL_EVENT_TYPE_ID = 3917527; // 30 Min Meeting
 const CAL_EVENT_TYPE_SLUG = '30min';
+
+// Debug: Log environment variable status on startup
+console.log('🔍 Environment Check:');
+console.log('  process.env.CAL_API_KEY:', process.env.CAL_API_KEY ? 'SET' : 'MISSING');
+console.log('  process.env.EXPO_PUBLIC_CAL_API_KEY:', process.env.EXPO_PUBLIC_CAL_API_KEY ? 'SET' : 'MISSING');
+console.log('  Final CAL_API_KEY value:', CAL_API_KEY ? 'SET' : 'MISSING');
+console.log('  All env keys:', Object.keys(process.env).filter(k => k.includes('CAL') || k.includes('API')).join(', '));
 
 // Helper function to parse date and time
 function parseDateTime(dateString, timeString) {
@@ -297,7 +303,7 @@ async function handleRescheduleAppointment(params) {
 // Main webhook endpoint
 app.post('/webhook', async (req, res) => {
   console.log('\n🔔 Webhook received:', new Date().toISOString());
-  console.log('📦 Full request body:', JSON.stringify(req.body, null, 2));
+  console.log('�� Full request body:', JSON.stringify(req.body, null, 2));
 
   const { message } = req.body;
 
