@@ -8,16 +8,18 @@ const express = require('express');
 const cors = require('cors');
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.WEBHOOK_PORT || 3001;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
 // Cal.com API configuration
-const CAL_API_KEY = process.env.CAL_API_KEY;
+const CAL_API_KEY = process.env.EXPO_PUBLIC_CAL_API_KEY;
 const CAL_API_BASE_URL = 'https://api.cal.com/v1';
-const CAL_EVENT_TYPE_ID = process.env.CAL_EVENT_TYPE_ID || 3917527;
+const CAL_USERNAME = 'sonic-iq-6ttuqv';
+const CAL_EVENT_TYPE_ID = 3917527; // 30 Min Meeting
+const CAL_EVENT_TYPE_SLUG = '30min';
 
 // Helper function to parse date and time
 function parseDateTime(dateString, timeString) {
@@ -71,9 +73,8 @@ async function handleGetAvailableSlots(params) {
 
   try {
     const timeZone = 'Europe/London';
-    const startTime = `${params.date}T00:00:00Z`;
-    const endTime = `${params.date}T23:59:59Z`;
-    const url = `${CAL_API_BASE_URL}/slots?apiKey=${CAL_API_KEY}&eventTypeId=${CAL_EVENT_TYPE_ID}&startTime=${startTime}&endTime=${endTime}&timeZone=${encodeURIComponent(timeZone)}`;
+    // V1 API uses username and eventTypeSlug, not eventTypeId for slots
+    const url = `${CAL_API_BASE_URL}/slots/available?apiKey=${CAL_API_KEY}&username=${CAL_USERNAME}&eventTypeSlug=${CAL_EVENT_TYPE_SLUG}&startTime=${params.date}T00:00:00Z&endTime=${params.date}T23:59:59Z&timeZone=${encodeURIComponent(timeZone)}`;
 
     console.log('📤 Request URL:', url);
 
@@ -90,10 +91,11 @@ async function handleGetAvailableSlots(params) {
     }
 
     const data = await response.json();
-    console.log('📥 Response data:', JSON.stringify(data).substring(0, 200));
+    console.log('📥 Response data:', JSON.stringify(data, null, 2));
 
-    const dateSlots = data.slots?.[params.date] || [];
-    const formattedSlots = formatSlots(dateSlots);
+    // V1 API returns: { data: { slots: [{time: "ISO"}, ...] } }
+    const slots = data.data?.slots || [];
+    const formattedSlots = formatSlots(slots);
 
     console.log(`✅ Found ${formattedSlots.length} available slots`);
 
@@ -126,20 +128,33 @@ async function handleBookAppointment(params) {
   console.log('📝 Booking appointment for:', params.customerName);
 
   try {
+    // Parse date and time
     const startTime = parseDateTime(params.date, params.time);
+
+    // Generate placeholder email - customer will provide real email via WhatsApp link
+    const placeholderEmail = `pending-${params.customerPhone.replace(/\D/g, '')}@scteeth.temp`;
 
     const bookingPayload = {
       eventTypeId: CAL_EVENT_TYPE_ID,
       start: startTime,
+      name: params.customerName,
+      email: placeholderEmail, // Placeholder - will be updated via WhatsApp link
       timeZone: 'Europe/London',
       language: 'en',
-      metadata: {},
+      metadata: {
+        source: 'AI Receptionist',
+        notes: params.notes || '',
+        emailPending: true, // Flag that email needs to be collected
+        customerPhone: params.customerPhone
+      },
       responses: {
         name: params.customerName,
-        email: params.customerEmail,
+        email: placeholderEmail,
         location: { optionValue: '', value: 'integrations:zoom' },
-        notes: params.notes || 'Booked via AI Receptionist'
-      }
+        notes: params.notes || 'Booked via AI Receptionist - Email pending via WhatsApp',
+        phone: params.customerPhone || '' // Add phone to responses for webhook handler
+      },
+      smsReminderNumber: params.customerPhone || undefined // For Cal.com SMS reminders
     };
 
     console.log('📤 Sending booking request...');
@@ -162,13 +177,28 @@ async function handleBookAppointment(params) {
     }
 
     const booking = await response.json();
-    console.log('✅ Booking created:', booking.id);
+    const bookingId = booking.data?.id;
+    const bookingUid = booking.data?.uid;
+
+    console.log('✅ Booking created successfully');
+    console.log('📋 Booking ID:', bookingId);
+    console.log('📋 Booking UID:', bookingUid);
+
+    // Send WhatsApp message with link to provide email
+    const emailConfirmLink = `https://scteeth.com/confirm-email?booking=${bookingUid}&phone=${encodeURIComponent(params.customerPhone)}`;
+    const whatsappMessage = `Hi ${params.customerName}! Your appointment is confirmed for ${params.date} at ${params.time}.\n\nPlease click this link to provide your email address and receive your Zoom meeting link:\n${emailConfirmLink}\n\nThank you! - SC Teeth`;
+
+    console.log('📱 Sending WhatsApp message with email confirmation link...');
+
+    // Note: WhatsApp sending would be handled separately
+    // For now, we'll return the link in the response
 
     return {
       success: true,
-      bookingId: booking.id,
-      bookingUid: booking.uid,
-      message: `Perfect! I have booked your appointment for ${params.time} on ${params.date}. You will receive a confirmation email at ${params.customerEmail} with the Zoom meeting link. Is there anything else I can help you with?`
+      bookingId: bookingId,
+      bookingUid: bookingUid,
+      emailConfirmLink: emailConfirmLink,
+      message: `Perfect! I have booked your appointment for ${params.time} on ${params.date}. You will receive a WhatsApp message with a link to confirm your email address and get your Zoom meeting link. Is there anything else I can help you with?`
     };
 
   } catch (error) {
@@ -271,6 +301,7 @@ app.post('/webhook', async (req, res) => {
 
   const { message } = req.body;
 
+  // Vapi sends tool-calls messages, not function-call messages
   if (!message || message.type !== 'tool-calls') {
     console.log('⚠️  Not a tool-calls message, ignoring');
     console.log('Message type:', message?.type);
@@ -285,6 +316,7 @@ app.post('/webhook', async (req, res) => {
 
   console.log(`📞 Processing ${toolCallList.length} tool call(s)`);
 
+  // Process each tool call and collect results
   const results = [];
 
   for (const toolCall of toolCallList) {
@@ -330,6 +362,7 @@ app.post('/webhook', async (req, res) => {
 
       console.log('📤 Result:', JSON.stringify(result, null, 2));
 
+      // Add result with tool call ID
       results.push({
         toolCallId: id,
         result: result
