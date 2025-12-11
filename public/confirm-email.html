@@ -69,7 +69,8 @@
             font-size: 14px;
         }
 
-        input[type="email"] {
+        input[type="email"],
+        input[type="text"] {
             width: 100%;
             padding: 14px 16px;
             border: 2px solid #e2e8f0;
@@ -79,7 +80,8 @@
             background: #f7fafc;
         }
 
-        input[type="email"]:focus {
+        input[type="email"]:focus,
+        input[type="text"]:focus {
             outline: none;
             border-color: #667eea;
             background: white;
@@ -200,16 +202,28 @@
         </div>
 
         <div class="success" id="successMessage">
-            <strong>Success!</strong> Your email has been confirmed. You will receive your appointment details and Zoom link shortly.
+            <strong>Success!</strong> Your details have been confirmed. You will receive your appointment confirmation shortly.
         </div>
 
         <div class="error" id="errorMessage"></div>
 
         <div id="formContainer">
             <h1>AI Front Desk</h1>
-            <p class="subtitle">Please confirm your email address to receive your appointment details and Zoom meeting link.</p>
+            <p class="subtitle">Please confirm your details to receive your appointment confirmation.</p>
 
             <form id="emailForm">
+                <div class="form-group">
+                    <label for="name">Full Name</label>
+                    <input
+                        type="text"
+                        id="name"
+                        name="name"
+                        required
+                        placeholder="John Smith"
+                        autocomplete="name"
+                    >
+                </div>
+
                 <div class="form-group">
                     <label for="email">Email Address</label>
                     <input
@@ -222,7 +236,7 @@
                     >
                 </div>
 
-                <button type="submit" id="submitBtn">Confirm Email</button>
+                <button type="submit" id="submitBtn">Confirm Details</button>
             </form>
 
             <div class="loading" id="loading">Processing...</div>
@@ -236,6 +250,7 @@
         const phone = urlParams.get('phone');
 
         const form = document.getElementById('emailForm');
+        const nameInput = document.getElementById('name');
         const emailInput = document.getElementById('email');
         const submitBtn = document.getElementById('submitBtn');
         const loading = document.getElementById('loading');
@@ -247,10 +262,11 @@
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
+            const name = nameInput.value.trim();
             const email = emailInput.value.trim();
 
-            if (!email || !bookingUid) {
-                showError('Invalid request. Please try again or contact support.');
+            if (!name || !email || !bookingUid) {
+                showError('Please fill in all required fields.');
                 return;
             }
 
@@ -267,6 +283,7 @@
                     },
                     body: JSON.stringify({
                         bookingUid: bookingUid,
+                        name: name,
                         email: email,
                         phone: phone
                     })
