@@ -123,6 +123,61 @@ async function sendWhatsAppMessage(to, message) {
   }
 }
 
+// Helper function to send confirmation email
+async function sendConfirmationEmail(email, name, formattedDate, formattedTime, meetingLink) {
+  const RESEND_API_KEY = process.env.RESEND_API_KEY || process.env.EXPO_PUBLIC_RESEND_API_KEY;
+
+  if (!RESEND_API_KEY) {
+    console.log('⚠️  Resend API key not configured, skipping email');
+    return { success: false, error: 'Resend not configured' };
+  }
+
+  try {
+    console.log('📧 Sending confirmation email via Resend...');
+
+    const emailHtml = `
+      <h2>Your Appointment is Confirmed!</h2>
+      <p>Hi ${name},</p>
+      <p>Thank you for confirming your details. Your appointment is scheduled for:</p>
+      <ul>
+        <li><strong>Date:</strong> ${formattedDate}</li>
+        <li><strong>Time:</strong> ${formattedTime}</li>
+        ${meetingLink ? `<li><strong>Meeting Link:</strong> <a href="${meetingLink}">Join Meeting</a></li>` : ''}
+      </ul>
+      ${meetingLink ? '<p>You will also receive a calendar invitation shortly.</p>' : '<p>We look forward to seeing you!</p>'}
+      <p>If you need to cancel or reschedule, please call us.</p>
+      <p>Thank you!</p>
+    `;
+
+    const emailResponse = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: 'AI Receptionist <onboarding@resend.dev>',
+        to: email,
+        subject: `Appointment Confirmed - ${formattedDate}`,
+        html: emailHtml
+      })
+    });
+
+    if (emailResponse.ok) {
+      const emailData = await emailResponse.json();
+      console.log('✅ Confirmation email sent:', emailData.id);
+      return { success: true, emailId: emailData.id };
+    } else {
+      const emailError = await emailResponse.text();
+      console.error('⚠️  Failed to send confirmation email:', emailError);
+      return { success: false, error: emailError };
+    }
+  } catch (emailError) {
+    console.error('⚠️  Error sending confirmation email:', emailError);
+    return { success: false, error: emailError.message };
+  }
+}
+
 // Function handlers
 async function handleGetAvailableSlots(params) {
   console.log('📅 Getting available slots for:', params.date);
@@ -532,64 +587,43 @@ app.post('/api/update-email', async (req, res) => {
     const oldEmail = booking.attendees?.[0]?.email;
     const isPlaceholderEmail = oldEmail && oldEmail.includes('@scteeth.temp');
 
-    // If booking has placeholder email, cancel and rebook with correct email
-    // This ensures Cal.com sends confirmation to the real email address
+    // Reschedule to same time with correct email to trigger Cal.com confirmation
     if (isPlaceholderEmail) {
-      console.log('📧 Placeholder email detected, canceling and rebooking with correct email...');
+      console.log('📧 Placeholder email detected, rescheduling with correct email to trigger Cal.com confirmation...');
 
       try {
-        // Cancel the old booking
-        console.log('❌ Canceling placeholder booking...');
-        const cancelResponse = await fetch(`${CAL_API_BASE_URL}/bookings/${booking.id}/cancel?apiKey=${CAL_API_KEY}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            cancellationReason: 'Updating email address - rebooking automatically'
-          })
-        });
+        console.log('🔄 Rescheduling booking to same time with correct attendee email...');
 
-        if (!cancelResponse.ok) {
-          console.error('⚠️  Failed to cancel placeholder booking, continuing anyway...');
-        } else {
-          console.log('✅ Placeholder booking cancelled');
-        }
-
-        // Create new booking with correct email
-        console.log('📝 Creating new booking with correct email...');
-        const newBookingPayload = {
-          eventTypeId: booking.eventTypeId,
+        // Use reschedule endpoint to same time - this triggers Cal.com email
+        const reschedulePayload = {
           start: booking.startTime,
-          timeZone: booking.attendees[0]?.timeZone || 'Europe/London',
-          language: 'en',
-          metadata: booking.metadata || {},
+          rescheduledBy: correctedName,
+          reason: 'Email address confirmed',
           responses: {
             name: correctedName,
             email: email,
-            location: booking.location || { optionValue: '', value: 'integrations:zoom' },
-            notes: `Booked via AI Receptionist - Email confirmed by customer`
+            location: booking.location || { optionValue: '', value: 'integrations:zoom' }
           }
         };
 
-        const newBookingResponse = await fetch(`${CAL_API_BASE_URL}/bookings?apiKey=${CAL_API_KEY}`, {
+        const rescheduleResponse = await fetch(`${CAL_API_BASE_URL}/bookings/${booking.uid}/reschedule?apiKey=${CAL_API_KEY}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newBookingPayload)
+          body: JSON.stringify(reschedulePayload)
         });
 
-        if (!newBookingResponse.ok) {
-          const errorText = await newBookingResponse.text();
-          console.error('❌ Failed to create new booking:', errorText);
-          throw new Error('Failed to rebook with correct email');
+        if (!rescheduleResponse.ok) {
+          const errorText = await rescheduleResponse.text();
+          console.error('❌ Failed to reschedule booking:', errorText);
+          throw new Error('Failed to reschedule booking with correct email');
         }
 
-        const newBooking = await newBookingResponse.json();
-        console.log('✅ New booking created with correct email!');
-        console.log('📋 New Booking UID:', newBooking.uid || newBooking.data?.uid);
+        const rescheduledBooking = await rescheduleResponse.json();
+        console.log('✅ Booking rescheduled with correct email - Cal.com will send confirmation!');
 
-        // Store the correction mapping
+        // Store the correction
         bookingCorrections.set(bookingUid, {
-          oldBookingUid: bookingUid,
-          newBookingUid: newBooking.uid || newBooking.data?.uid,
+          bookingUid,
           email,
           name: correctedName,
           phone,
@@ -598,13 +632,9 @@ app.post('/api/update-email', async (req, res) => {
           updatedAt: new Date().toISOString()
         });
 
-        // Get meeting link from new booking
-        const meetingLink = newBooking.metadata?.videoCallUrl || newBooking.conferenceData?.url;
-
-        // Return success - Cal.com will send confirmation email automatically
         return res.json({
           success: true,
-          message: 'Email confirmed successfully! You will receive a confirmation email from Cal.com shortly.',
+          message: 'Email confirmed successfully! You will receive a confirmation email from Cal.com with your meeting link shortly.',
           booking: {
             date: formattedDate,
             time: formattedTime,
@@ -612,8 +642,8 @@ app.post('/api/update-email', async (req, res) => {
           }
         });
 
-      } catch (rebookError) {
-        console.error('❌ Error during cancel/rebook:', rebookError);
+      } catch (rescheduleError) {
+        console.error('❌ Error during reschedule:', rescheduleError);
         // Fall through to send manual confirmation email
       }
     }
