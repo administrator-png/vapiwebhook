@@ -224,12 +224,21 @@ async function handleBookAppointment(params) {
     }
 
     const booking = await response.json();
-    const bookingId = booking.id;
-    const bookingUid = booking.uid;
+
+    // Log full response to see structure
+    console.log('📦 Full booking response:', JSON.stringify(booking, null, 2));
+
+    // Handle different response structures from Cal.com API
+    const bookingId = booking.id || booking.data?.id;
+    const bookingUid = booking.uid || booking.data?.uid;
 
     console.log('✅ Booking created successfully');
     console.log('📋 Booking ID:', bookingId);
     console.log('📋 Booking UID:', bookingUid);
+
+    if (!bookingUid) {
+      console.error('❌ WARNING: No booking UID found in response!');
+    }
 
     // Send WhatsApp message with link to provide email
     const emailConfirmLink = `https://vapiwebhook.onrender.com/confirm-email.html?booking=${bookingUid}&phone=${encodeURIComponent(params.customerPhone)}`;
@@ -441,54 +450,84 @@ app.post('/webhook', async (req, res) => {
 // API endpoint to update booking email
 app.post('/api/update-email', async (req, res) => {
   console.log('\n📧 Email update request received');
+  console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
+
   const { bookingUid, email, phone } = req.body;
 
   if (!bookingUid || !email) {
+    console.error('❌ Missing required fields');
     return res.status(400).json({
       success: false,
       message: 'Booking ID and email are required'
     });
   }
 
+  console.log(`�� Looking up booking UID: ${bookingUid}`);
+
   try {
-    // Get the booking details first
-    const getResponse = await fetch(`${CAL_API_BASE_URL}/bookings/${bookingUid}?apiKey=${CAL_API_KEY}`);
+    // Cal.com V1 API requires us to use the V2 endpoint for UID-based lookups
+    // V1 only supports numeric IDs, but UIDs require V2
+    const getUrl = `https://api.cal.com/v2/bookings/${bookingUid}`;
+    console.log('📤 GET request to V2 API:', getUrl);
+
+    const getResponse = await fetch(getUrl, {
+      headers: {
+        'Authorization': `Bearer ${CAL_API_KEY}`,
+        'cal-api-version': '2024-08-13'
+      }
+    });
+
+    console.log('📥 GET response status:', getResponse.status);
 
     if (!getResponse.ok) {
-      console.error('❌ Failed to fetch booking');
+      const errorText = await getResponse.text();
+      console.error('❌ Failed to fetch booking:', errorText);
       return res.status(404).json({
         success: false,
-        message: 'Booking not found'
+        message: 'Booking not found. The link may be invalid or expired.'
       });
     }
 
     const bookingData = await getResponse.json();
-    console.log('📋 Current booking:', bookingData);
+    console.log('📋 Current booking data:', JSON.stringify(bookingData, null, 2));
+
+    // Extract booking data (V2 API wraps response in 'data' object)
+    const booking = bookingData.data || bookingData;
 
     // Update the booking with the real email
     const updatePayload = {
       responses: {
-        ...bookingData.responses,
+        ...booking.responses,
         email: email
       }
     };
 
-    const updateResponse = await fetch(`${CAL_API_BASE_URL}/bookings/${bookingUid}?apiKey=${CAL_API_KEY}`, {
+    console.log('📤 Updating booking with payload:', JSON.stringify(updatePayload, null, 2));
+
+    const updateResponse = await fetch(`https://api.cal.com/v2/bookings/${bookingUid}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Authorization': `Bearer ${CAL_API_KEY}`,
+        'Content-Type': 'application/json',
+        'cal-api-version': '2024-08-13'
+      },
       body: JSON.stringify(updatePayload)
     });
+
+    console.log('📥 PATCH response status:', updateResponse.status);
 
     if (!updateResponse.ok) {
       const errorText = await updateResponse.text();
       console.error('❌ Update failed:', errorText);
       return res.status(500).json({
         success: false,
-        message: 'Failed to update email'
+        message: 'Failed to update email. Please try again.'
       });
     }
 
+    const updatedBooking = await updateResponse.json();
     console.log('✅ Email updated successfully');
+    console.log('📋 Updated booking:', JSON.stringify(updatedBooking, null, 2));
 
     res.json({
       success: true,
