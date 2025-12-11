@@ -13,6 +13,9 @@ const PORT = process.env.WEBHOOK_PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// Serve static files from public directory
+app.use(express.static('public'));
+
 // Cal.com API configuration
 const CAL_API_KEY = process.env.CAL_API_KEY || process.env.EXPO_PUBLIC_CAL_API_KEY;
 const CAL_API_BASE_URL = 'https://api.cal.com/v1';
@@ -229,8 +232,8 @@ async function handleBookAppointment(params) {
     console.log('📋 Booking UID:', bookingUid);
 
     // Send WhatsApp message with link to provide email
-    const emailConfirmLink = `https://scteeth.com/confirm-email?booking=${bookingUid}&phone=${encodeURIComponent(params.customerPhone)}`;
-    const whatsappMessage = `Hi ${params.customerName}! Your appointment is confirmed for ${params.date} at ${params.time}.\n\nPlease click this link to provide your email address and receive your Zoom meeting link:\n${emailConfirmLink}\n\nThank you! - SC Teeth`;
+    const emailConfirmLink = `https://vapiwebhook.onrender.com/confirm-email.html?booking=${bookingUid}&phone=${encodeURIComponent(params.customerPhone)}`;
+    const whatsappMessage = `Hi ${params.customerName}! Your appointment is confirmed for ${params.date} at ${params.time}.\n\nPlease click this link to provide your email address and receive your Zoom meeting link:\n${emailConfirmLink}\n\nThank you! - AI Front Desk`;
 
     console.log('📱 Sending WhatsApp message with email confirmation link...');
 
@@ -433,6 +436,72 @@ app.post('/webhook', async (req, res) => {
 
   console.log(`✅ Returning ${results.length} result(s)`);
   res.json({ results });
+});
+
+// API endpoint to update booking email
+app.post('/api/update-email', async (req, res) => {
+  console.log('\n📧 Email update request received');
+  const { bookingUid, email, phone } = req.body;
+
+  if (!bookingUid || !email) {
+    return res.status(400).json({
+      success: false,
+      message: 'Booking ID and email are required'
+    });
+  }
+
+  try {
+    // Get the booking details first
+    const getResponse = await fetch(`${CAL_API_BASE_URL}/bookings/${bookingUid}?apiKey=${CAL_API_KEY}`);
+
+    if (!getResponse.ok) {
+      console.error('❌ Failed to fetch booking');
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    const bookingData = await getResponse.json();
+    console.log('📋 Current booking:', bookingData);
+
+    // Update the booking with the real email
+    const updatePayload = {
+      responses: {
+        ...bookingData.responses,
+        email: email
+      }
+    };
+
+    const updateResponse = await fetch(`${CAL_API_BASE_URL}/bookings/${bookingUid}?apiKey=${CAL_API_KEY}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updatePayload)
+    });
+
+    if (!updateResponse.ok) {
+      const errorText = await updateResponse.text();
+      console.error('❌ Update failed:', errorText);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update email'
+      });
+    }
+
+    console.log('✅ Email updated successfully');
+
+    res.json({
+      success: true,
+      message: 'Email confirmed successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Error updating email:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error. Please try again.'
+    });
+  }
 });
 
 // Health check endpoint
