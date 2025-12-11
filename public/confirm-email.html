@@ -276,7 +276,7 @@
             errorMessage.classList.remove('show');
 
             try {
-                const response = await fetch('/api/update-email', {
+                const response = await fetch('https://vapiwebhook.onrender.com/api/update-email', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
