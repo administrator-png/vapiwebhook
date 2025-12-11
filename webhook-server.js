@@ -514,20 +514,6 @@ app.post('/api/update-email', async (req, res) => {
 
     console.log('📋 Found booking:', JSON.stringify(booking, null, 2));
 
-    // Store the corrected details
-    const correctedName = name || booking.attendees?.[0]?.name || 'Customer';
-    bookingCorrections.set(bookingUid, {
-      bookingUid,
-      email,
-      name: correctedName,
-      phone,
-      originalEmail: booking.attendees?.[0]?.email,
-      originalName: booking.attendees?.[0]?.name,
-      updatedAt: new Date().toISOString()
-    });
-
-    console.log('✅ Stored corrected details:', bookingCorrections.get(bookingUid));
-
     // Extract booking details
     const appointmentDate = new Date(booking.startTime);
     const formattedDate = appointmentDate.toLocaleDateString('en-GB', {
@@ -541,6 +527,109 @@ app.post('/api/update-email', async (req, res) => {
       minute: '2-digit',
       hour12: true
     });
+
+    const correctedName = name || booking.attendees?.[0]?.name || 'Customer';
+    const oldEmail = booking.attendees?.[0]?.email;
+    const isPlaceholderEmail = oldEmail && oldEmail.includes('@scteeth.temp');
+
+    // If booking has placeholder email, cancel and rebook with correct email
+    // This ensures Cal.com sends confirmation to the real email address
+    if (isPlaceholderEmail) {
+      console.log('📧 Placeholder email detected, canceling and rebooking with correct email...');
+
+      try {
+        // Cancel the old booking
+        console.log('❌ Canceling placeholder booking...');
+        const cancelResponse = await fetch(`${CAL_API_BASE_URL}/bookings/${booking.id}/cancel?apiKey=${CAL_API_KEY}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            cancellationReason: 'Updating email address - rebooking automatically'
+          })
+        });
+
+        if (!cancelResponse.ok) {
+          console.error('⚠️  Failed to cancel placeholder booking, continuing anyway...');
+        } else {
+          console.log('✅ Placeholder booking cancelled');
+        }
+
+        // Create new booking with correct email
+        console.log('📝 Creating new booking with correct email...');
+        const newBookingPayload = {
+          eventTypeId: booking.eventTypeId,
+          start: booking.startTime,
+          timeZone: booking.attendees[0]?.timeZone || 'Europe/London',
+          language: 'en',
+          metadata: booking.metadata || {},
+          responses: {
+            name: correctedName,
+            email: email,
+            location: booking.location || { optionValue: '', value: 'integrations:zoom' },
+            notes: `Booked via AI Receptionist - Email confirmed by customer`
+          }
+        };
+
+        const newBookingResponse = await fetch(`${CAL_API_BASE_URL}/bookings?apiKey=${CAL_API_KEY}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newBookingPayload)
+        });
+
+        if (!newBookingResponse.ok) {
+          const errorText = await newBookingResponse.text();
+          console.error('❌ Failed to create new booking:', errorText);
+          throw new Error('Failed to rebook with correct email');
+        }
+
+        const newBooking = await newBookingResponse.json();
+        console.log('✅ New booking created with correct email!');
+        console.log('📋 New Booking UID:', newBooking.uid || newBooking.data?.uid);
+
+        // Store the correction mapping
+        bookingCorrections.set(bookingUid, {
+          oldBookingUid: bookingUid,
+          newBookingUid: newBooking.uid || newBooking.data?.uid,
+          email,
+          name: correctedName,
+          phone,
+          originalEmail: oldEmail,
+          originalName: booking.attendees?.[0]?.name,
+          updatedAt: new Date().toISOString()
+        });
+
+        // Get meeting link from new booking
+        const meetingLink = newBooking.metadata?.videoCallUrl || newBooking.conferenceData?.url;
+
+        // Return success - Cal.com will send confirmation email automatically
+        return res.json({
+          success: true,
+          message: 'Email confirmed successfully! You will receive a confirmation email from Cal.com shortly.',
+          booking: {
+            date: formattedDate,
+            time: formattedTime,
+            name: correctedName
+          }
+        });
+
+      } catch (rebookError) {
+        console.error('❌ Error during cancel/rebook:', rebookError);
+        // Fall through to send manual confirmation email
+      }
+    }
+
+    // If not a placeholder email or rebook failed, store correction and send manual email
+    bookingCorrections.set(bookingUid, {
+      bookingUid,
+      email,
+      name: correctedName,
+      phone,
+      originalEmail: oldEmail,
+      originalName: booking.attendees?.[0]?.name,
+      updatedAt: new Date().toISOString()
+    });
+
+    console.log('✅ Stored corrected details:', bookingCorrections.get(bookingUid));
 
     // Get meeting link from booking if available
     const meetingLink = booking.metadata?.videoCallUrl || booking.conferenceData?.url;
