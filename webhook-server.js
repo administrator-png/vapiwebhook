@@ -187,8 +187,11 @@ async function handleBookAppointment(params) {
     // Parse date and time
     const startTime = parseDateTime(params.date, params.time);
 
-    // Generate placeholder email - customer will provide real email via WhatsApp link
-    const placeholderEmail = `pending-${params.customerPhone.replace(/\D/g, '')}@scteeth.temp`;
+    // Use provided email or generate placeholder if not provided
+    const email = params.customerEmail || `pending-${params.customerPhone.replace(/\D/g, '')}@scteeth.temp`;
+    const needsEmailConfirmation = !params.customerEmail;
+
+    console.log('📧 Email:', email, needsEmailConfirmation ? '(placeholder - needs confirmation)' : '(provided)');
 
     const bookingPayload = {
       eventTypeId: CAL_EVENT_TYPE_ID,
@@ -198,9 +201,9 @@ async function handleBookAppointment(params) {
       metadata: {},
       responses: {
         name: params.customerName,
-        email: placeholderEmail,
+        email: email,
         location: { optionValue: '', value: 'integrations:zoom' },
-        notes: params.notes || 'Booked via AI Receptionist - Email pending via WhatsApp'
+        notes: params.notes || (needsEmailConfirmation ? 'Booked via AI Receptionist - Email pending via WhatsApp' : 'Booked via AI Receptionist')
       }
     };
 
@@ -240,14 +243,23 @@ async function handleBookAppointment(params) {
       console.error('❌ WARNING: No booking UID found in response!');
     }
 
-    // Send WhatsApp message with link to provide email
-    const emailConfirmLink = `https://vapiwebhook.onrender.com/confirm-email.html?booking=${bookingUid}&phone=${encodeURIComponent(params.customerPhone)}`;
-    const whatsappMessage = `Hi ${params.customerName}! Your appointment is confirmed for ${params.date} at ${params.time}.\n\nPlease click this link to provide your email address and receive your Zoom meeting link:\n${emailConfirmLink}\n\nThank you! - AI Front Desk`;
+    // Send WhatsApp message
+    let whatsappMessage;
+    let whatsappResult;
+    let emailConfirmLink;
 
-    console.log('📱 Sending WhatsApp message with email confirmation link...');
+    if (needsEmailConfirmation) {
+      // Send link to provide email
+      emailConfirmLink = `https://vapiwebhook.onrender.com/confirm-email.html?booking=${bookingUid}&phone=${encodeURIComponent(params.customerPhone)}`;
+      whatsappMessage = `Hi ${params.customerName}! Your appointment is confirmed for ${params.date} at ${params.time}.\n\nPlease click this link to confirm your name and email address:\n${emailConfirmLink}\n\nThank you! - AI Front Desk`;
+    } else {
+      // Email was provided, just send confirmation
+      whatsappMessage = `Hi ${params.customerName}! Your appointment is confirmed for ${params.date} at ${params.time}.\n\nYou will receive a calendar invite and Zoom link at ${email}.\n\nThank you! - AI Front Desk`;
+    }
 
-    // Send WhatsApp message via Twilio
-    const whatsappResult = await sendWhatsAppMessage(params.customerPhone, whatsappMessage);
+    console.log('📱 Sending WhatsApp message...');
+    whatsappResult = await sendWhatsAppMessage(params.customerPhone, whatsappMessage);
+
     if (whatsappResult.success) {
       console.log('✅ WhatsApp sent successfully');
     } else {
@@ -260,7 +272,9 @@ async function handleBookAppointment(params) {
       bookingUid: bookingUid,
       emailConfirmLink: emailConfirmLink,
       whatsappSent: whatsappResult.success,
-      message: `Perfect! I have booked your appointment for ${params.time} on ${params.date}. You will receive a WhatsApp message with a link to confirm your email address and get your Zoom meeting link. Is there anything else I can help you with?`
+      message: needsEmailConfirmation
+        ? `Perfect! I have booked your appointment for ${params.time} on ${params.date}. You will receive a WhatsApp message with a link to confirm your email address and get your Zoom meeting link. Is there anything else I can help you with?`
+        : `Perfect! I have booked your appointment for ${params.time} on ${params.date}. You will receive email and WhatsApp confirmations shortly. Is there anything else I can help you with?`
     };
 
   } catch (error) {
@@ -447,12 +461,16 @@ app.post('/webhook', async (req, res) => {
   res.json({ results });
 });
 
+// In-memory storage for corrected booking details
+// In production, use a proper database
+const bookingCorrections = new Map();
+
 // API endpoint to update booking email
 app.post('/api/update-email', async (req, res) => {
   console.log('\n📧 Email update request received');
   console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
 
-  const { bookingUid, email, phone } = req.body;
+  const { bookingUid, email, phone, name } = req.body;
 
   if (!bookingUid || !email) {
     console.error('❌ Missing required fields');
@@ -462,76 +480,129 @@ app.post('/api/update-email', async (req, res) => {
     });
   }
 
-  console.log(`�� Looking up booking UID: ${bookingUid}`);
+  console.log(`🔍 Looking up booking UID: ${bookingUid}`);
 
   try {
-    // Cal.com V1 API requires us to use the V2 endpoint for UID-based lookups
-    // V1 only supports numeric IDs, but UIDs require V2
-    const getUrl = `https://api.cal.com/v2/bookings/${bookingUid}`;
-    console.log('📤 GET request to V2 API:', getUrl);
+    // Fetch bookings from Cal.com V1 API
+    const listUrl = `${CAL_API_BASE_URL}/bookings?apiKey=${CAL_API_KEY}`;
+    console.log('📤 Fetching bookings from V1 API');
 
-    const getResponse = await fetch(getUrl, {
-      headers: {
-        'Authorization': `Bearer ${CAL_API_KEY}`,
-        'cal-api-version': '2024-08-13'
-      }
-    });
+    const listResponse = await fetch(listUrl);
 
-    console.log('📥 GET response status:', getResponse.status);
+    if (!listResponse.ok) {
+      const errorText = await listResponse.text();
+      console.error('❌ Failed to fetch bookings:', errorText);
+      return res.status(404).json({
+        success: false,
+        message: 'Unable to verify booking. The link may be invalid or expired.'
+      });
+    }
 
-    if (!getResponse.ok) {
-      const errorText = await getResponse.text();
-      console.error('❌ Failed to fetch booking:', errorText);
+    const bookingsData = await listResponse.json();
+    const bookings = bookingsData.bookings || [];
+
+    // Find the booking with matching UID
+    const booking = bookings.find(b => b.uid === bookingUid);
+
+    if (!booking) {
+      console.error('❌ Booking not found with UID:', bookingUid);
       return res.status(404).json({
         success: false,
         message: 'Booking not found. The link may be invalid or expired.'
       });
     }
 
-    const bookingData = await getResponse.json();
-    console.log('📋 Current booking data:', JSON.stringify(bookingData, null, 2));
+    console.log('📋 Found booking:', JSON.stringify(booking, null, 2));
 
-    // Extract booking data (V2 API wraps response in 'data' object)
-    const booking = bookingData.data || bookingData;
-
-    // Update the booking with the real email
-    const updatePayload = {
-      responses: {
-        ...booking.responses,
-        email: email
-      }
-    };
-
-    console.log('📤 Updating booking with payload:', JSON.stringify(updatePayload, null, 2));
-
-    const updateResponse = await fetch(`https://api.cal.com/v2/bookings/${bookingUid}`, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${CAL_API_KEY}`,
-        'Content-Type': 'application/json',
-        'cal-api-version': '2024-08-13'
-      },
-      body: JSON.stringify(updatePayload)
+    // Store the corrected details
+    const correctedName = name || booking.attendees?.[0]?.name || 'Customer';
+    bookingCorrections.set(bookingUid, {
+      bookingUid,
+      email,
+      name: correctedName,
+      phone,
+      originalEmail: booking.attendees?.[0]?.email,
+      originalName: booking.attendees?.[0]?.name,
+      updatedAt: new Date().toISOString()
     });
 
-    console.log('📥 PATCH response status:', updateResponse.status);
+    console.log('✅ Stored corrected details:', bookingCorrections.get(bookingUid));
 
-    if (!updateResponse.ok) {
-      const errorText = await updateResponse.text();
-      console.error('❌ Update failed:', errorText);
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to update email. Please try again.'
-      });
+    // Extract booking details
+    const appointmentDate = new Date(booking.startTime);
+    const formattedDate = appointmentDate.toLocaleDateString('en-GB', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+    const formattedTime = appointmentDate.toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+
+    // Get meeting link from booking if available
+    const meetingLink = booking.metadata?.videoCallUrl || booking.conferenceData?.url;
+
+    // Send confirmation email using Resend
+    const RESEND_API_KEY = process.env.RESEND_API_KEY || process.env.EXPO_PUBLIC_RESEND_API_KEY;
+
+    if (RESEND_API_KEY) {
+      try {
+        console.log('📧 Sending confirmation email via Resend...');
+
+        const emailHtml = `
+          <h2>Your Appointment is Confirmed!</h2>
+          <p>Hi ${correctedName},</p>
+          <p>Thank you for confirming your details. Your appointment is scheduled for:</p>
+          <ul>
+            <li><strong>Date:</strong> ${formattedDate}</li>
+            <li><strong>Time:</strong> ${formattedTime}</li>
+            ${meetingLink ? `<li><strong>Meeting Link:</strong> <a href="${meetingLink}">Join Meeting</a></li>` : ''}
+          </ul>
+          ${meetingLink ? '<p>You will also receive a calendar invitation shortly.</p>' : '<p>We look forward to seeing you!</p>'}
+          <p>If you need to cancel or reschedule, please call us.</p>
+          <p>Thank you!</p>
+        `;
+
+        const emailResponse = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${RESEND_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            from: 'AI Receptionist <onboarding@resend.dev>',
+            to: email,
+            subject: `Appointment Confirmed - ${formattedDate}`,
+            html: emailHtml
+          })
+        });
+
+        if (emailResponse.ok) {
+          const emailData = await emailResponse.json();
+          console.log('✅ Confirmation email sent:', emailData.id);
+        } else {
+          const emailError = await emailResponse.text();
+          console.error('⚠️  Failed to send confirmation email:', emailError);
+        }
+      } catch (emailError) {
+        console.error('⚠️  Error sending confirmation email:', emailError);
+      }
+    } else {
+      console.log('⚠️  Resend API key not configured, skipping email');
     }
 
-    const updatedBooking = await updateResponse.json();
-    console.log('✅ Email updated successfully');
-    console.log('📋 Updated booking:', JSON.stringify(updatedBooking, null, 2));
-
+    // Return success response
     res.json({
       success: true,
-      message: 'Email confirmed successfully'
+      message: 'Email confirmed successfully! You will receive a confirmation email shortly.',
+      booking: {
+        date: formattedDate,
+        time: formattedTime,
+        name: correctedName
+      }
     });
 
   } catch (error) {
