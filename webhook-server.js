@@ -587,43 +587,67 @@ app.post('/api/update-email', async (req, res) => {
     const oldEmail = booking.attendees?.[0]?.email;
     const isPlaceholderEmail = oldEmail && oldEmail.includes('@scteeth.temp');
 
-    // Reschedule to same time with correct email to trigger Cal.com confirmation
+    // Cancel old booking and create new one with correct email
+    // This is the only way to trigger Cal.com to send confirmation to the new email
     if (isPlaceholderEmail) {
-      console.log('📧 Placeholder email detected, rescheduling with correct email to trigger Cal.com confirmation...');
+      console.log('📧 Placeholder email detected, will cancel and create new booking with correct email...');
 
       try {
-        console.log('🔄 Rescheduling booking to same time with correct attendee email...');
+        // Step 1: Cancel the placeholder booking silently
+        console.log('❌ Canceling placeholder booking (silent)...');
+        const cancelResponse = await fetch(`${CAL_API_BASE_URL}/bookings/${booking.id}/cancel?apiKey=${CAL_API_KEY}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' }
+        });
 
-        // Use reschedule endpoint to same time - this triggers Cal.com email
-        const reschedulePayload = {
+        if (!cancelResponse.ok) {
+          const errorText = await cancelResponse.text();
+          console.error('⚠️  Failed to cancel placeholder booking:', errorText);
+        } else {
+          console.log('✅ Placeholder booking cancelled');
+        }
+
+        // Step 2: Wait a moment for Cal.com to process the cancellation
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Step 3: Create new booking with correct email at the same time
+        console.log('📝 Creating new booking with correct email...');
+        const newBookingPayload = {
+          eventTypeId: booking.eventTypeId,
           start: booking.startTime,
-          rescheduledBy: correctedName,
-          reason: 'Email address confirmed',
+          timeZone: booking.attendees[0]?.timeZone || 'Europe/London',
+          language: 'en',
+          metadata: {},
           responses: {
             name: correctedName,
             email: email,
-            location: booking.location || { optionValue: '', value: 'integrations:zoom' }
+            location: booking.location || { optionValue: '', value: 'integrations:zoom' },
+            notes: 'Booked via AI Receptionist - Email confirmed by customer'
           }
         };
 
-        const rescheduleResponse = await fetch(`${CAL_API_BASE_URL}/bookings/${booking.uid}/reschedule?apiKey=${CAL_API_KEY}`, {
+        const newBookingResponse = await fetch(`${CAL_API_BASE_URL}/bookings?apiKey=${CAL_API_KEY}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(reschedulePayload)
+          body: JSON.stringify(newBookingPayload)
         });
 
-        if (!rescheduleResponse.ok) {
-          const errorText = await rescheduleResponse.text();
-          console.error('❌ Failed to reschedule booking:', errorText);
-          throw new Error('Failed to reschedule booking with correct email');
+        if (!newBookingResponse.ok) {
+          const errorText = await newBookingResponse.text();
+          console.error('❌ Failed to create new booking:', errorText);
+          throw new Error('Failed to create new booking with correct email');
         }
 
-        const rescheduledBooking = await rescheduleResponse.json();
-        console.log('✅ Booking rescheduled with correct email - Cal.com will send confirmation!');
+        const newBooking = await newBookingResponse.json();
+        console.log('✅ New booking created with correct email - Cal.com will send confirmation!');
+        console.log('📋 New Booking ID:', newBooking.id);
+        console.log('📋 New Booking UID:', newBooking.uid);
 
-        // Store the correction
+        // Store the correction mapping
         bookingCorrections.set(bookingUid, {
-          bookingUid,
+          oldBookingUid: bookingUid,
+          newBookingUid: newBooking.uid || newBooking.data?.uid,
+          newBookingId: newBooking.id || newBooking.data?.id,
           email,
           name: correctedName,
           phone,
@@ -642,8 +666,8 @@ app.post('/api/update-email', async (req, res) => {
           }
         });
 
-      } catch (rescheduleError) {
-        console.error('❌ Error during reschedule:', rescheduleError);
+      } catch (rebookError) {
+        console.error('❌ Error during cancel/rebook:', rebookError);
         // Fall through to send manual confirmation email
       }
     }
